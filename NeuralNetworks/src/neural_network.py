@@ -46,6 +46,11 @@ class NeuralNetwork:
         self.activation_function = activation_functions.get(activation)
         self.activation_function_derivative=activation_functions_derivatives.get(activation)
 
+        self.momentum_w = [np.zeros_like(w) for w in self.weights]
+        self.momentum_b = [np.zeros_like(b) for b in self.bias]
+        self.ema_w = [np.zeros_like(w) for w in self.weights]
+        self.ema_b = [np.zeros_like(b) for b in self.bias]
+
     #activation functions
     def sigmoid(self, x): return 1 / (1 + np.exp(-x))
     def sigmoid_derivative(self, x): return x * (1 - x)
@@ -75,40 +80,79 @@ class NeuralNetwork:
         
         return self.a[-1]
 
-    def backpropagate(self, X, y):
+    def compute_gradients(self, X, y):
         m = X.shape[0]
         delta = (self.forward(X) - y)/m 
+        gradients_w, gradients_b = [], []
         
         for i in reversed(range(len(self.weights))):
-            delta_weights = np.dot(self.a[i].T, delta)
-            delta_bias = np.sum(delta, axis=0)
-            
-            self.weights[i] -= self.learning_rate * delta_weights
-            self.bias[i] -= self.learning_rate * delta_bias
+            gradients_w.append(np.dot(self.a[i].T, delta))
+            gradients_b.append(np.sum(delta, axis=0))
             if i > 0:
-                delta = np.dot(delta, self.weights[i].T) * self.activation_function_derivative(self.a[i])
+                delta = np.dot(delta, self.weights[i].T) * self.activation_function_derivative(self.z[i-1])
+        return gradients_w[::-1], gradients_b[::-1]
+    
+    def update_weights(self, gradients_w, gradients_b):
+        self.optimizer_function(gradients_w, gradients_b)
 
+    def SGD_update(self, gradients_w, gradients_b):
+        for i in range(len(self.weights)):
+            self.weights[i] -= self.learning_rate * gradients_w[i]
+            self.bias[i] -= self.learning_rate * gradients_b[i]
 
-    def train(self, X_train, y_train, X_test, y_test, epochs, batch_size=32, verbose=True, show_training=True, weights_visualization_interval=1000):
-        batch_size = batch_size if batch_size is not None else self.batch_size
-        train_losses = []
-        test_losses=[]
-        start_time = time.time()
+    def momentum_update(self, gradients_w, gradients_b, momentum_coeff):
+        for i in range(len(self.weights)):
+            self.momentum_w[i] = gradients_w[i] + momentum_coeff * self.momentum_w[i]
+            self.momentum_b[i] = gradients_b[i] + momentum_coeff * self.momentum_b[i]
+            self.weights[i] -= self.learning_rate * self.momentum_w[i]
+            self.bias[i] -= self.learning_rate * self.momentum_b[i]
+
+    def RMSprop_update(self, gradients_w, gradients_b, beta, eps):
+        for i in range(len(self.weights)):
+            self.ema_w[i] = beta * self.ema_w[i] + (1 - beta) * (gradients_w[i] ** 2)
+            self.ema_b[i] = beta * self.ema_b[i] + (1 - beta) * (gradients_b[i] ** 2)
+
+            self.weights[i] -= self.learning_rate * gradients_w[i] / (np.sqrt(self.ema_w[i]) + eps)
+            self.bias[i] -= self.learning_rate * gradients_b[i] / (np.sqrt(self.ema_b[i]) + eps)
+
+    def set_optimizer(self, optimizer="SGD", momentum_coeff=0.9, beta=0.9, eps=1e-8):
+        self.optimizer = optimizer
+        self.momentum_coeff = momentum_coeff
+        self.beta = beta
+        self.eps = eps
+
+        if optimizer == "SGD":
+            self.optimizer_function = self.SGD_update
+        elif optimizer == "momentum":
+            self.optimizer_function = lambda gw, gb: self.momentum_update(gw, gb, momentum_coeff)
+        elif optimizer == "RMSprop":
+            self.optimizer_function = lambda gw, gb: self.RMSprop_update(gw, gb, beta, eps)
+        else:
+            raise ValueError("Unknown optimizer")
+
+    def train(self, X_train, y_train, X_test, y_test, epochs, 
+               optimizer="SGD", momentum_coeff=0.9, beta=0.9, eps=1e-8, 
+               batch_size=32, verbose=True, verbose_interval=100, plot_weights_upadate=False, weights_visualization_interval=1000):
         
+        batch_size = batch_size if batch_size is not None else self.batch_size
+        self.set_optimizer(optimizer, momentum_coeff, beta, eps)
+        train_losses = []
+        test_losses = []
+        start_time = time.time()
+
         for epoch in range(epochs):
             if batch_size is None: #full batch (all datasets records are used for computing gradient)
-                self.forward(X_train)
-                self.backpropagate(X_train, y_train)
+                gradients_w, gradients_b = self.compute_gradients(X_train, y_train)
+                self.update_weights(gradients_w, gradients_b)
             else:
                 permutation = np.random.permutation(X_train.shape[0]) #mini-batch
                 for i in range(0, X_train.shape[0], batch_size):
                     indices = permutation[i:i+batch_size]
-                    X_batch = X_train[indices]
-                    y_batch = y_train[indices]
-                    self.forward(X_batch)
-                    self.backpropagate(X_batch, y_batch)
-            
+                    X_batch, y_batch = X_train[indices], y_train[indices]
 
+                    gradients_w, gradients_b = self.compute_gradients(X_batch, y_batch)
+                    self.update_weights(gradients_w, gradients_b)
+            
             train_loss = self.MSE(X_train, y_train)
             test_loss = self.MSE(X_test, y_test)
             train_losses.append(train_loss)
@@ -118,7 +162,7 @@ class NeuralNetwork:
                 if epoch % 100 == 0:
                     print(f"Epoch {epoch}, Training Loss: {train_loss:.6f}, Test Loss: {test_loss:.6f}")
         
-            if show_training:
+            if plot_weights_upadate:
                 if (epoch+1) % weights_visualization_interval == 0:
                     self.plot_weights_distribution(epoch+1)
             

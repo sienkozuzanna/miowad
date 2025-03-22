@@ -132,7 +132,9 @@ class NeuralNetwork:
 
     def train(self, X_train, y_train, X_test, y_test, epochs, 
                optimizer="SGD", momentum_coeff=0.9, beta=0.9, eps=1e-8, 
-               batch_size=32, verbose=True, verbose_interval=100, plot_weights_upadate=False, weights_visualization_interval=1000):
+               batch_size=32, verbose=True, verbose_interval=100, 
+               plot_weights_upadate=False, weights_visualization_interval=1000,
+               plot_training_loss=True, n_last_training_epochs=None):
         
         batch_size = batch_size if batch_size is not None else self.batch_size
         self.set_optimizer(optimizer, momentum_coeff, beta, eps)
@@ -170,22 +172,25 @@ class NeuralNetwork:
         end_time = time.time()
         print(f"Total training time: {end_time - start_time:.2f} seconds")
 
+        if plot_training_loss:
+            self.plot_last_epochs_training(self.train_losses, n_last_training_epochs, epochs)
+    
+    def plot_last_epochs_training(self, train_losses, n_last_training_epochs, n_total_epochs):
+
+        if n_last_training_epochs is not None:
+            train_losses=train_losses[-n_last_training_epochs:]
+            epoch_range = list(range(n_total_epochs - n_last_training_epochs, n_total_epochs))
+        else:
+            epoch_range=list(range(n_total_epochs))
+
         plt.figure(figsize=(6, 4))
-        plt.plot(train_losses, label="Training Loss", color="blue", linewidth=2)
-        plt.plot(test_losses, label="Test Loss", color="red", linestyle="--", linewidth=2)
-        plt.title("Training and Test Losses")
+        plt.plot(epoch_range, train_losses, label="Training Loss", color="blue", linewidth=2)
+        plt.title("Training Losses")
         plt.xlabel("Epoch")
         plt.ylabel("MSE")
         plt.legend()
         plt.grid(True)
         plt.show()
-    
-
-    def predict(self, X):
-        return self.forward(X)
-    
-    def MSE(self, X, Y):
-        return np.mean((self.predict(X) - Y) ** 2)
     
     def plot_weights_heatmap(self, epoch):
         plt.figure(figsize=(6, 4))
@@ -210,3 +215,9 @@ class NeuralNetwork:
         plt.suptitle(f"Weight Distributions at Epoch {epoch}")
         plt.tight_layout()
         plt.show()
+
+    def predict(self, X):
+        return self.forward(X)
+    
+    def MSE(self, X, Y):
+        return np.mean((self.predict(X) - Y) ** 2)

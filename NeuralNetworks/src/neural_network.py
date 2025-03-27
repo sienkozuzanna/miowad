@@ -5,16 +5,24 @@ import seaborn as sns
 from sklearn.metrics import f1_score
 
 class NeuralNetwork:
-    def __init__(self, layers, activation, task="regression", weights_initialize=None, batch_size=None):
+    def __init__(self, layers, activation, task="regression", last_layer_activation=None,weights_initialize=None, batch_size=None):
         """
         :param layers: A list specifying the number of neurons in each layer.
         :param activation: The activation function to use in the hidden layers.
         :param weights_initialize: Type of weight initialization (e.g., He, Xavier). If None -> random from uniform distribuiton U([0,1])
         :param task: Regression or classfication task
+        :param last_layer_activation: Activation function for the last layer. If None:
+                                  - 'linear' for regression
+                                  - 'softmax' for classification
         """
 
         self.layers = layers
         self.batch_size = batch_size
+
+        if last_layer_activation is None:
+            self.last_layer_activation = "linear" if self.task == "regression" else "softmax"
+        else:
+            self.last_layer_activation = last_layer_activation
 
         self.task=task
         if self.task=="regression":
@@ -43,18 +51,31 @@ class NeuralNetwork:
             "sigmoid": self.sigmoid,
             "tanh": self.tanh,
             "relu": self.relu,
-            "leaky_relu": self.leaky_relu
+            "leaky_relu": self.leaky_relu,
+            "linear": lambda x: x,
+            "softmax": self.softmax
         }
 
         activation_functions_derivatives = {
             "sigmoid": self.sigmoid_derivative,
             "tanh": self.tanh_derivative,
             "relu": self.relu_derivative,
-            "leaky_relu": self.leaky_relu_derivative
+            "leaky_relu": self.leaky_relu_derivative,
+            "linear": lambda x: 1,
+            "softmax": None
         }
 
         self.activation_function = activation_functions.get(activation)
         self.activation_function_derivative=activation_functions_derivatives.get(activation)
+
+        if last_layer_activation is None:
+            if self.task == "regression":
+                self.last_layer_activation = "linear"
+            else:
+                self.last_layer_activation = "softmax"
+
+        self.last_layer_activation_function = activation_functions.get(self.last_layer_activation)
+        self.last_layer_activation_function_derivative = activation_functions_derivatives.get(self.last_layer_activation)
 
         self.momentum_w = [np.zeros_like(w) for w in self.weights]
         self.momentum_b = [np.zeros_like(b) for b in self.bias]
@@ -92,19 +113,20 @@ class NeuralNetwork:
         z = np.dot(self.a[-1], self.weights[-1]) + self.bias[-1]
         self.z.append(z)
 
-        if self.task=="regression":
-            self.a.append(z) #last layer - linear function
-        if self.task=="classification":
-            self.a.append(self.softmax(z)) #last layer - softmax activation function
+        z = np.dot(self.a[-1], self.weights[-1]) + self.bias[-1]
+        self.z.append(z)
+        self.a.append(self.last_layer_activation_function(z)) #linear or softmax by default, see init
         
         return self.a[-1]
 
     def compute_gradients(self, X, y):
         m = X.shape[0]
-        if self.task=="regression":
-            delta = (self.forward(X) - y)/m 
+        if self.task == "classification" and self.last_layer_activation == "softmax":
+            delta = self.forward(X) - y  # softmax + cross-entropy gradient
+        elif self.task == "regression":
+            delta = (self.forward(X) - y) / m
         else:
-            delta=self.forward(X)-y # softmax & cross-entropy derivative
+            delta = (self.forward(X) - y) * self.last_layer_activation_function_derivative(self.z[-1])
 
         gradients_w, gradients_b = [], []
         

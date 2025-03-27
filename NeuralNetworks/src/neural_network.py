@@ -2,20 +2,30 @@ import numpy as np
 import time
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.metrics import f1_score
 
 class NeuralNetwork:
-    def __init__(self, layers, activation, learning_rate, weights_initialize=None, batch_size=None):
+    def __init__(self, layers, activation, task="regression", weights_initialize=None, batch_size=None):
         """
         :param layers: A list specifying the number of neurons in each layer.
         :param activation: The activation function to use in the hidden layers.
         :param weights_initialize: Type of weight initialization (e.g., He, Xavier). If None -> random from uniform distribuiton U([0,1])
+        :param task: Regression or classfication task
         """
 
         self.layers = layers
+        self.batch_size = batch_size
+
+        self.task=task
+        if self.task=="regression":
+            self.loss_function=self.MSE
+            self.loss_function_name = "MSE"
+        else:
+            self.loss_function=self.CrossEntropy
+            self.loss_function_name="CrossEntropy"
+
         self.weights = []
         self.bias = []
-        self.learning_rate = learning_rate
-        self.batch_size = batch_size
 
         for i in range(len(layers)-1):
             if weights_initialize == "Xavier":
@@ -64,6 +74,11 @@ class NeuralNetwork:
     def leaky_relu(self, x): return np.where(x > 0, x, 0.01 * x)
     def leaky_relu_derivative(self, x): return np.where(x > 0, 1, 0.01)
 
+    def softmax(self, x):
+        shift_x = x - np.max(x, axis=1, keepdims=True) 
+        exp_x = np.exp(shift_x)
+        return exp_x / np.sum(exp_x, axis=1, keepdims=True)
+    #no need for softmax gradient since softmax+cross-entropy gradient = y_pred-y_true
     
     def forward(self, X):
         self.a = [X]
@@ -76,13 +91,21 @@ class NeuralNetwork:
 
         z = np.dot(self.a[-1], self.weights[-1]) + self.bias[-1]
         self.z.append(z)
-        self.a.append(z)
+
+        if self.task=="regression":
+            self.a.append(z) #last layer - linear function
+        if self.task=="classification":
+            self.a.append(self.softmax(z)) #last layer - softmax activation function
         
         return self.a[-1]
 
     def compute_gradients(self, X, y):
         m = X.shape[0]
-        delta = (self.forward(X) - y)/m 
+        if self.task=="regression":
+            delta = (self.forward(X) - y)/m 
+        else:
+            delta=self.forward(X)-y # softmax & cross-entropy derivative
+
         gradients_w, gradients_b = [], []
         
         for i in reversed(range(len(self.weights))):
@@ -92,49 +115,48 @@ class NeuralNetwork:
                 delta = np.dot(delta, self.weights[i].T) * self.activation_function_derivative(self.z[i-1])
         return gradients_w[::-1], gradients_b[::-1]
     
-    def update_weights(self, gradients_w, gradients_b):
-        self.optimizer_function(gradients_w, gradients_b)
+    def update_weights(self, gradients_w, gradients_b, learning_rate):
+        self.optimizer_function(gradients_w, gradients_b, learning_rate)
 
-    def SGD_update(self, gradients_w, gradients_b):
+    def SGD_update(self, gradients_w, gradients_b, learning_rate):
         for i in range(len(self.weights)):
-            self.weights[i] -= self.learning_rate * gradients_w[i]
-            self.bias[i] -= self.learning_rate * gradients_b[i]
+            self.weights[i] -= learning_rate * gradients_w[i]
+            self.bias[i] -= learning_rate * gradients_b[i]
 
-    def momentum_update(self, gradients_w, gradients_b, momentum_coeff):
+    def momentum_update(self, gradients_w, gradients_b, learning_rate, momentum_coeff):
         for i in range(len(self.weights)):
             self.momentum_w[i] = gradients_w[i] + momentum_coeff * self.momentum_w[i]
             self.momentum_b[i] = gradients_b[i] + momentum_coeff * self.momentum_b[i]
-            self.weights[i] -= self.learning_rate * self.momentum_w[i]
-            self.bias[i] -= self.learning_rate * self.momentum_b[i]
+            self.weights[i] -= learning_rate * self.momentum_w[i]
+            self.bias[i] -= learning_rate * self.momentum_b[i]
 
-    def RMSprop_update(self, gradients_w, gradients_b, beta, eps):
+    def RMSprop_update(self, gradients_w, gradients_b, learning_rate, beta, eps):
         for i in range(len(self.weights)):
             self.ema_w[i] = beta * self.ema_w[i] + (1 - beta) * (gradients_w[i] ** 2)
             self.ema_b[i] = beta * self.ema_b[i] + (1 - beta) * (gradients_b[i] ** 2)
 
-            self.weights[i] -= self.learning_rate * gradients_w[i] / (np.sqrt(self.ema_w[i]) + eps)
-            self.bias[i] -= self.learning_rate * gradients_b[i] / (np.sqrt(self.ema_b[i]) + eps)
+            self.weights[i] -= learning_rate * gradients_w[i] / (np.sqrt(self.ema_w[i]) + eps)
+            self.bias[i] -= learning_rate * gradients_b[i] / (np.sqrt(self.ema_b[i]) + eps)
 
-    def set_optimizer(self, optimizer="SGD", momentum_coeff=0.9, beta=0.9, eps=1e-8):
+    def set_optimizer(self, learning_rate, optimizer="SGD", momentum_coeff=0.9, beta=0.9, eps=1e-8):
         self.optimizer = optimizer
         self.momentum_coeff = momentum_coeff
         self.beta = beta
         self.eps = eps
 
         if optimizer == "SGD":
-            self.optimizer_function = self.SGD_update
+            self.optimizer_function = lambda gw, gb, lr: self.SGD_update(gw, gb, lr)
         elif optimizer == "momentum":
-            self.optimizer_function = lambda gw, gb: self.momentum_update(gw, gb, momentum_coeff)
+            self.optimizer_function = lambda gw, gb, lr: self.momentum_update(gw, gb, lr, momentum_coeff)
         elif optimizer == "RMSprop":
-            self.optimizer_function = lambda gw, gb: self.RMSprop_update(gw, gb, beta, eps)
+            self.optimizer_function = lambda gw, gb, lr: self.RMSprop_update(gw, gb, lr, beta, eps)
         else:
             raise ValueError("Unknown optimizer")
 
-    def train(self, X_train, y_train, X_test, y_test, epochs, 
+    def train(self, X_train, y_train, X_test, y_test, learning_rate, epochs, 
                optimizer="SGD", momentum_coeff=0.9, beta=0.9, eps=1e-8, 
-               batch_size=32, verbose=True, verbose_interval=100, 
-               plot_weights_upadate=False, weights_visualization_interval=1000,
-               plot_training_loss=True, n_last_training_epochs=None):
+               batch_size=32, verbose=True, verbose_interval=100, plot_weights_update=False, weights_visualization_interval=1000,
+               plot_training_loss=True, plot_test_loss=True, n_last_training_epochs=None):
         
         batch_size = batch_size if batch_size is not None else self.batch_size
         self.set_optimizer(optimizer, momentum_coeff, beta, eps)
@@ -145,7 +167,7 @@ class NeuralNetwork:
         for epoch in range(epochs):
             if batch_size is None: #full batch (all datasets records are used for computing gradient)
                 gradients_w, gradients_b = self.compute_gradients(X_train, y_train)
-                self.update_weights(gradients_w, gradients_b)
+                self.update_weights(gradients_w, gradients_b, learning_rate)
             else:
                 permutation = np.random.permutation(X_train.shape[0]) #mini-batch
                 for i in range(0, X_train.shape[0], batch_size):
@@ -153,18 +175,18 @@ class NeuralNetwork:
                     X_batch, y_batch = X_train[indices], y_train[indices]
 
                     gradients_w, gradients_b = self.compute_gradients(X_batch, y_batch)
-                    self.update_weights(gradients_w, gradients_b)
+                    self.update_weights(gradients_w, gradients_b, learning_rate)
             
-            train_loss = self.MSE(X_train, y_train)
-            test_loss = self.MSE(X_test, y_test)
-            train_losses.append(train_loss)
-            test_losses.append(test_loss)
+            train_loss = self.loss_function(X_train, y_train)
+            test_loss = self.loss_function(X_test, y_test)
+            self.train_losses.append(train_loss)
+            self.test_losses.append(test_loss)
 
             if verbose:
-                if epoch % 100 == 0:
+                if epoch % verbose_interval == 0:
                     print(f"Epoch {epoch}, Training Loss: {train_loss:.6f}, Test Loss: {test_loss:.6f}")
         
-            if plot_weights_upadate:
+            if plot_weights_update:
                 if (epoch+1) % weights_visualization_interval == 0:
                     self.plot_weights_distribution(epoch+1)
             
@@ -174,6 +196,9 @@ class NeuralNetwork:
 
         if plot_training_loss:
             self.plot_last_epochs_training(self.train_losses, n_last_training_epochs, epochs)
+
+        if self.task=="classification":
+            print(f"F-score on test set: {self.Fscore(X_test, y_test, average="micro"):.2f}")
     
     def plot_last_epochs_training(self, train_losses, n_last_training_epochs, n_total_epochs):
 
@@ -217,7 +242,24 @@ class NeuralNetwork:
         plt.show()
 
     def predict(self, X):
-        return self.forward(X)
+        if self.task=="regression":
+            return self.forward(X)
+        if self.task=="classification":
+            return self.forward(X).argmax(axis=1)
     
     def MSE(self, X, Y):
         return np.mean((self.predict(X) - Y) ** 2)
+    
+    def CrossEntropy(self, X, Y):
+        Y_pred = self.forward(X)
+        epsilon = 1e-15
+        Y_pred = np.clip(Y_pred, epsilon, 1 - epsilon) #to avoid log(0)
+        cross_entropy = -np.mean(Y * np.log(Y_pred)) #for multi-class classification
+        return cross_entropy
+    
+    def Fscore(self, X, Y, average="micro"):
+        Y_pred=self.predict(X)
+        Y_true = np.argmax(Y, axis=1)
+
+        f1 = f1_score(Y_true, Y_pred, average=average)
+        return f1

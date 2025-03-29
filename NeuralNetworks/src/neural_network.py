@@ -178,10 +178,11 @@ class NeuralNetwork:
     def train(self, X_train, y_train, X_test, y_test, learning_rate, epochs, 
                optimizer="SGD", momentum_coeff=0.9, beta=0.9, eps=1e-8, 
                batch_size=32, verbose=True, verbose_interval=100, plot_weights_update=False, weights_visualization_interval=1000,
-               plot_training_loss=True, plot_test_loss=True, n_last_training_epochs=None):
+               plot_training_loss=True, plot_test_loss=True, n_last_training_epochs=None, 
+               return_training_stats=False):
         
         batch_size = batch_size if batch_size is not None else self.batch_size
-        self.set_optimizer(optimizer, momentum_coeff, beta, eps)
+        self.set_optimizer(learning_rate, optimizer, momentum_coeff, beta, eps)
         train_losses = []
         test_losses = []
         start_time = time.time()
@@ -201,8 +202,8 @@ class NeuralNetwork:
             
             train_loss = self.loss_function(X_train, y_train)
             test_loss = self.loss_function(X_test, y_test)
-            self.train_losses.append(train_loss)
-            self.test_losses.append(test_loss)
+            train_losses.append(train_loss)
+            test_losses.append(test_loss)
 
             if verbose:
                 if epoch % verbose_interval == 0:
@@ -214,15 +215,19 @@ class NeuralNetwork:
             
         
         end_time = time.time()
-        print(f"Total training time: {end_time - start_time:.2f} seconds")
+        #print(f"Total training time: {end_time - start_time:.2f} seconds")
 
         if plot_training_loss:
-            self.plot_last_epochs_training(self.train_losses, n_last_training_epochs, epochs)
-
-        if self.task=="classification":
-            print(f"F-score on test set: {self.Fscore(X_test, y_test, average="micro"):.2f}")
+            self.plot_last_epochs_training(train_losses, test_losses, n_last_training_epochs, epochs, plot_test_loss)
+        
+        if return_training_stats:
+            return {
+            "train_losses": train_losses,
+            "test_losses": test_losses,
+            "training_time": end_time - start_time,
+        }
     
-    def plot_last_epochs_training(self, train_losses, n_last_training_epochs, n_total_epochs):
+    def plot_last_epochs_training(self, train_losses, test_losses, n_last_training_epochs, n_total_epochs, plot_test_losses):
 
         if n_last_training_epochs is not None:
             train_losses=train_losses[-n_last_training_epochs:]
@@ -232,9 +237,11 @@ class NeuralNetwork:
 
         plt.figure(figsize=(6, 4))
         plt.plot(epoch_range, train_losses, label="Training Loss", color="blue", linewidth=2)
-        plt.title("Training Losses")
+        if plot_test_losses:
+            plt.plot(epoch_range, test_losses, label="Test Loss", color="red", linewidth=2)
+        plt.title("Losses During Training")
         plt.xlabel("Epoch")
-        plt.ylabel("MSE")
+        plt.ylabel(f"{self.loss_function_name}")
         plt.legend()
         plt.grid(True)
         plt.show()

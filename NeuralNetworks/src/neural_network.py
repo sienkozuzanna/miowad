@@ -179,12 +179,22 @@ class NeuralNetwork:
                optimizer="SGD", momentum_coeff=0.9, beta=0.9, eps=1e-8, 
                batch_size=32, verbose=True, verbose_interval=100, plot_weights_update=False, weights_visualization_interval=1000,
                plot_training_loss=True, plot_test_loss=True, n_last_training_epochs=None, 
-               return_training_stats=False):
+               return_training_stats=False, early_stopping=False, patience=10):
         
         batch_size = batch_size if batch_size is not None else self.batch_size
         self.set_optimizer(learning_rate, optimizer, momentum_coeff, beta, eps)
+
+        #storing train and test losses
         train_losses = []
         test_losses = []
+
+        best_test_loss=float('inf')
+        epochs_without_improvement=0
+
+        #saving best weights and biases
+        best_weights = [w.copy() for w in self.weights]
+        best_bias = [b.copy() for b in self.bias]
+
         start_time = time.time()
 
         for epoch in range(epochs):
@@ -208,7 +218,20 @@ class NeuralNetwork:
             if verbose:
                 if epoch % verbose_interval == 0:
                     print(f"Epoch {epoch}, Training Loss: {train_loss:.6f}, Test Loss: {test_loss:.6f}")
-        
+
+            if early_stopping:
+                if test_loss<best_test_loss:
+                    best_test_loss = test_loss
+                    epochs_without_improvement=0
+                    best_weights, best_bias= [w.copy() for w in self.weights], [b.copy() for b in self.bias]
+                else:
+                    epochs_without_improvment+=1
+                
+                if epochs_without_improvement>=patience:
+                    print(f"Early stopping due to no improvment in test loss after {patience} epochs")
+                    self.weights, self.bias = best_weights, best_bias
+                    break
+
             if plot_weights_update:
                 if (epoch+1) % weights_visualization_interval == 0:
                     self.plot_weights_distribution(epoch+1)
@@ -276,16 +299,35 @@ class NeuralNetwork:
         if self.task=="classification":
             return self.forward(X).argmax(axis=1)
     
-    def MSE(self, X, Y):
-        return np.mean((self.predict(X) - Y) ** 2)
+    def MSE(self, X, Y, lambda_regularization=0.01, regularization_type="None"):
+        mse = np.mean((self.predict(X) - Y) ** 2)
+        if regularization_type=="L1": 
+            #L1 penetalny = lamda_regularization*sum(|w|)
+            l1_penalty = lambda_regularization * np.sum(np.abs(np.concatenate([w.flatten() for w in self.weights])))
+            return mse + l1_penalty
+        elif regularization_type=="L2":
+            #L2 penetalny = lamda_regularization*sum(w^2)
+            l2_penalty = lambda_regularization * np.sum((np.concatenate([w.flatten()**2 for w in self.weights])))
+            return mse + l2_penalty
+        else:
+            return mse
     
-    def CrossEntropy(self, X, Y):
+    def CrossEntropy(self, X, Y, lambda_regularization=0.01, regularization_type="None"):
         Y_pred = self.forward(X)
         epsilon = 1e-15
         Y_pred = np.clip(Y_pred, epsilon, 1 - epsilon) #to avoid log(0)
         cross_entropy = -np.mean(Y * np.log(Y_pred)) #for multi-class classification
-        return cross_entropy
-    
+        if regularization_type=="L1": 
+            #L1 penetalny = lamda_regularization*sum(|w|)
+            l1_penalty = lambda_regularization * np.sum(np.abs(np.concatenate([w.flatten() for w in self.weights])))
+            return cross_entropy + l1_penalty
+        elif regularization_type=="L2":
+            #L2 penetalny = lamda_regularization*sum(w^2)
+            l2_penalty = lambda_regularization * np.sum((np.concatenate([w.flatten()**2 for w in self.weights])))
+            return cross_entropy + l2_penalty
+        else:
+            return cross_entropy
+        
     def Fscore(self, X, Y, average="micro"):
         Y_pred=self.predict(X)
         Y_true = np.argmax(Y, axis=1)

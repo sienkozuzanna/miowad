@@ -20,7 +20,8 @@ def train_architecture_with_activation_functions(task, layers, activations, epoc
         'train_losses': [],
         'test_losses': [],
         'eval_metrics': [],
-        'Y_pred': []
+        'Y_pred': [], 
+        'models': []
     }
 
     for activation in activations:
@@ -54,21 +55,26 @@ def train_architecture_with_activation_functions(task, layers, activations, epoc
         results['test_losses'].append(training_stats['test_losses'])
         results['training_times'].append(training_stats['training_time'])
         results['eval_metrics'].append(eval_metric)
+        results['models'].append(nn)
 
     return results
 
-def plot_losses(activations, train_losses, test_losses):
+def plot_losses(activations, train_losses, test_losses, log_scale=False):
     plt.figure(figsize=(10,6))
     colors = sns.color_palette("tab10", len(activations))
 
     for i, activation in enumerate(activations):
         color = colors[i]
-        plt.plot(train_losses[i], label=f'Train Loss - {activation}', color=color)
-        plt.plot(test_losses[i], label=f'Test Loss - {activation}', linestyle='--', color=color)
+        plt.plot(train_losses[i], label=f'Train Loss - {activation}', color=color, linewidth=0.7)
+        plt.plot(test_losses[i], label=f'Test Loss - {activation}', linestyle=':', color=color, linewidth=0.7)
 
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
-    plt.title('Training and Test Losses per Activation Function')
+    if log_scale:
+        plt.yscale('log')
+        plt.title('Training and Test Losses per Activation Function (Log Scale)')
+    else:
+        plt.title('Training and Test Losses per Activation Function')
     
     plt.legend(loc='upper left', bbox_to_anchor=(1.1, 0.9), title="Activation Functions")
     plt.grid(True)
@@ -138,9 +144,21 @@ def plot_fitted_vs_actual_for_activations(activations, X_test, Y_test, Y_preds):
     plt.tight_layout()
     plt.show()
 
-def plot_fitted_vs_actual_for_classification(activations, X_test, Y_test, Y_preds, num_classes):
-    num_rows = int(np.ceil(len(activations) / 2))
-    fig, axes = plt.subplots(num_rows, 2, figsize=(10, 3 * num_rows))
+def plot_classification_results(results, X_test, Y_test, num_classes):
+    activations = results['activations']  # list of activation function names
+    y_preds = results['Y_pred']           # list of predictions for each activation
+    models = results['models']            # list of models for each activation
+    
+    labels = [f"Activation: {act}" for act in activations]
+    
+    num_plots = len(labels)
+    num_cols = min(2, num_plots)
+    num_rows = int(np.ceil(num_plots / num_cols))
+    fig, axes = plt.subplots(num_rows, num_cols, figsize=(10, 4 * num_rows))
+    
+    if num_plots == 1:
+        axes = np.array([axes])
+    
     axes = axes.flatten()
     
     if Y_test.shape[1] > 1:
@@ -150,41 +168,72 @@ def plot_fitted_vs_actual_for_classification(activations, X_test, Y_test, Y_pred
     
     colors = sns.color_palette("tab10", num_classes)
     
-    for i, activation in enumerate(activations):
+    all_handles = []
+    all_labels = []
+    
+    for class_label in range(num_classes):
+        correct_patch = plt.Line2D([], [], color=colors[class_label], marker='o', linestyle='None',
+                                   markersize=8, label=f'Class {class_label} (correct)')
+        wrong_patch = plt.Line2D([], [], color=colors[class_label], marker='x', linestyle='None',
+                                 markersize=8, label=f'Class {class_label} (wrong)')
+        all_handles.extend([correct_patch, wrong_patch])
+        all_labels.extend([f'Class {class_label} (correct)', f'Class {class_label} (wrong)'])
+    
+    for i, (label, model) in enumerate(zip(labels, models)):
         ax = axes[i]
-        Y_pred_class = np.argmax(Y_preds[i], axis=1) if Y_preds[i].ndim > 1 else Y_preds[i].flatten()
+        Y_pred_class = np.argmax(y_preds[i], axis=1) if y_preds[i].ndim > 1 else y_preds[i].flatten()
+        
+        x_min, x_max = X_test[:, 0].min() - 0.5, X_test[:, 0].max() + 0.5
+        y_min, y_max = X_test[:, 1].min() - 0.5, X_test[:, 1].max() + 0.5
+        xx, yy = np.meshgrid(np.linspace(x_min, x_max, 300),
+                             np.linspace(y_min, y_max, 300))
+        grid = np.c_[xx.ravel(), yy.ravel()]
+        
+        Z = model.predict(grid)
+        Z = np.argmax(Z, axis=1) if Z.ndim > 1 else Z
+        Z = Z.reshape(xx.shape)
+        
+        ax.contourf(xx, yy, Z, alpha=0.2, levels=np.arange(num_classes + 1) - 0.5,
+                   colors=colors, linestyles='dotted')
         
         for class_label in range(num_classes):
             correct_data = X_test[(Y_test_class == class_label) & (Y_pred_class == class_label)]
             wrong_data = X_test[(Y_test_class == class_label) & (Y_pred_class != class_label)]
             
-            ax.scatter(correct_data[:, 0], correct_data[:, 1], color=colors[class_label], alpha=0.6, marker='o')
-            ax.scatter(wrong_data[:, 0], wrong_data[:, 1], color=colors[class_label], alpha=0.6, marker='x')
+            ax.scatter(correct_data[:, 0], correct_data[:, 1], color=colors[class_label], 
+                      alpha=0.6, marker='o')
+            ax.scatter(wrong_data[:, 0], wrong_data[:, 1], color=colors[class_label], 
+                      alpha=0.6, marker='x')
         
-        ax.set_title(f'{activation} Activation')
+        ax.set_title(label)
         ax.set_xlabel('x')
         ax.set_ylabel('y')
         ax.grid(True)
     
+    fig.legend(handles=all_handles, labels=all_labels,
+               loc='upper right', bbox_to_anchor=(1.05, 0.9),
+               ncol=1, fontsize=9)
+    
     for j in range(i + 1, len(axes)):
         fig.delaxes(axes[j])
     
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 0.85, 1])
     plt.show()
 
 
-def visualize_results(results, task, X_test, Y_test, num_classes=None):
+def visualize_results(results, task, X_test, Y_test, num_classes=None, log_scale=False):
     activations = results['activations']
     training_times = results['training_times']
     train_losses = results['train_losses']
     test_losses = results['test_losses']
     eval_metrics = results['eval_metrics']
     y_pred=results['Y_pred']
+    model=results['models']
     
-    plot_losses(activations, train_losses, test_losses)
+    plot_losses(activations, train_losses, test_losses, log_scale)
     if task=="regression":
         plot_fitted_vs_actual_for_activations(activations=activations, X_test=X_test, Y_test=Y_test, Y_preds=y_pred)
     else:
-        plot_fitted_vs_actual_for_classification(activations=activations, X_test=X_test, Y_test=Y_test, Y_preds=y_pred, num_classes=num_classes)
+        plot_classification_results(results, X_test, Y_test, num_classes)
     display_eval_metrics(activations, eval_metrics, task=task)
     display_training_times(activations, training_times)

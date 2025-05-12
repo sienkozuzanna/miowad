@@ -2,16 +2,22 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import silhouette_score, davies_bouldin_score, adjusted_rand_score, confusion_matrix
+from sklearn.metrics import silhouette_score, davies_bouldin_score
 import pandas as pd
-from sklearn.decomposition import PCA
 import plotly.graph_objects as go
+from sklearn.manifold import TSNE
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+import logging
+from matplotlib.patches import RegularPolygon
+from matplotlib.collections import PatchCollection
 
 class KohonenNetwork:
-    def __init__(self, M, N, input_dim, neighbourhood_function='gaussian'):
+    def __init__(self, M, N, input_dim, neighbourhood_function='gaussian', topology='rectangular'):
         self.M=M
         self.N=N
         self.input_dim = input_dim
+        self.topology=topology #rectangular or hexagonal
         #each neuron in 2D grid has weight vector equal to number of inputs in data
         self.weights = np.random.rand(M, N, input_dim)
 
@@ -29,14 +35,29 @@ class KohonenNetwork:
                                     size=(self.M, self.N, self.input_dim))
 
     def gaussian_neighbourhood(self, bmu, neuron, sigma, s=1.0):
-        distance = np.linalg.norm(np.array(bmu) - np.array(neuron))
+        distance = self.calculate_distance(bmu, neuron)
         return np.exp(- (s * distance) ** 2 / (2 * sigma ** 2))
 
     #negative_second_derivative_gaussian
     def mexican_hat_neighbourhood(self, bmu, neuron, sigma, s=1.0):
-        distance = np.linalg.norm(np.array(bmu) - np.array(neuron))
+        distance = self.calculate_distance(bmu, neuron)
         dist_scaled = s * distance
         return (1 - (dist_scaled ** 2 / sigma ** 2)) * np.exp(-dist_scaled ** 2 / (2 * sigma ** 2))
+    
+    def calculate_distance(self, bmu, neuron):
+        if self.topology=='rectangular':
+           return np.linalg.norm(np.array(bmu) - np.array(neuron))
+        elif self.topology=='hexagonal':
+            i1, j1 = bmu
+            i2, j2 = neuron
+            x1 = j1 - 0.5 * (i1 % 2)
+            y1 = i1 * (np.sqrt(3)/2)
+            x2 = j2 - 0.5 * (i2 % 2)
+            y2 = i2 * (np.sqrt(3)/2)
+            return np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        else:
+            raise ValueError('Invalid topology, try rectangular or hexagonal.')
+
     
     #function to decay learning rate while training
     def learning_rate_decay(self,lambda_, t):
@@ -51,7 +72,7 @@ class KohonenNetwork:
         return np.unravel_index(np.argmin(distances), distances.shape)
 
     def fit(self, data, number_of_iterations, lambda_, sigma_t=1.0, s=1.0, 
-            plot_eval_metrics=True, eval_every=10, initialize_weights=True):
+            plot_eval_metrics=True, eval_every=10, initialize_weights=True, verbose=False):
         '''
         :param: data: input data
         :param: number_of_iterations: number of iterations for training
@@ -59,6 +80,11 @@ class KohonenNetwork:
         :param: sigma_t: initial neighbourhood size
         :param: s: scaling factor for neighbourhood function
         '''
+        if verbose:
+            logging.basicConfig(level=logging.INFO, format='%(message)s')
+        else:
+            logging.basicConfig(level=logging.WARNING)
+
         sigma_0=sigma_t
         data = np.array(data)
         if initialize_weights:
@@ -66,22 +92,30 @@ class KohonenNetwork:
         quantization_errors, silhouette_scores, db_indexes, iterations  = [],[],[],[]
 
         for t in range(number_of_iterations):
-            x = data[np.random.randint(len(data))]
-            i_bmu=self.find_bmu(x)
-            #print(f"Iteration {t+1}/{number_of_iterations}, BMU: {i_bmu}, Input: {x}")
+            data_shuffle = data.copy()
+            random.shuffle(data_shuffle)
             alpha_t=self.learning_rate_decay(lambda_, t)
             sigma = sigma_0 * np.exp(-t / lambda_)
-            for i in range(self.M):
-                for j in range(self.N):
-                    neighbourhood = self.neighbourhood_function(i_bmu, (i, j), sigma, s)
-                    self.weights[i][j]+=neighbourhood*alpha_t*(x-self.weights[i][j])
-                    #print(f"Neuron ({i},{j}) updated with neighbourhood {neighbourhood} and learning rate {alpha_t}")
+            for x in data_shuffle:
+                i_bmu=self.find_bmu(x)
+                for i in range(self.M):
+                    for j in range(self.N):
+                        neighbourhood = self.neighbourhood_function(i_bmu, (i, j), sigma, s)
+                        self.weights[i][j]+=neighbourhood*alpha_t*(x-self.weights[i][j])
 
             if plot_eval_metrics is True and t % eval_every == 0:
                 quantization_errors.append(self.quantization_error(data))
                 silhouette_scores.append(self.silhouette_score(data))
                 db_indexes.append(self.davies_bouldin_score(data))
                 iterations.append(t)
+
+                if verbose:
+                    logging.info(f'Iteration {t}:')
+                    logging.info(f'  Learning Rate (alpha): {alpha_t:.4f}')
+                    logging.info(f'  Neighborhood Size (sigma): {sigma:.4f}')
+                    logging.info(f'  Quantization Error: {f"{quantization_errors[-1]:.4f}" if quantization_errors[-1] is not None else "nan"}')
+                    logging.info(f'  Silhouette Score: {f"{silhouette_scores[-1]:.4f}" if silhouette_scores[-1] is not None else "nan"}')
+                    logging.info(f'  Davies-Bouldin Index: {f"{db_indexes[-1]:.4f}" if db_indexes[-1] is not None else "nan"}')
 
         if plot_eval_metrics:
             self.plot_eval_metrics(iterations, silhouette_scores, db_indexes, quantization_errors)
@@ -213,7 +247,26 @@ class KohonenNetwork:
                 neuron_stats[(i,j)] = (None, 0.0)
         
         return class_to_neurons, neuron_stats
+    
+    def compute_umat(self):
+        umat = np.zeros((self.M, self.N))
         
+        for i in range(self.M):
+            for j in range(self.N):
+                distances = []
+                if i > 0:
+                    distances.append(np.linalg.norm(self.weights[i][j] - self.weights[i-1][j]))
+                if i < self.M - 1:
+                    distances.append(np.linalg.norm(self.weights[i][j] - self.weights[i+1][j]))
+                if j > 0:
+                    distances.append(np.linalg.norm(self.weights[i][j] - self.weights[i][j-1]))
+                if j < self.N - 1:
+                    distances.append(np.linalg.norm(self.weights[i][j] - self.weights[i][j+1]))
+                
+                umat[i][j] = np.mean(distances) if distances else 0
+        
+        return umat
+            
 #--------------------------------VISUALIZATIONS-------------------------------
 
     def plot_eval_metrics(self, iterations, silhouette_scores, db_indexes, quantization_errors):
@@ -236,6 +289,132 @@ class KohonenNetwork:
 
         plt.tight_layout()
         plt.show()
+
+    def plot_umatrix(self, data, true_labels):
+        umat = self.compute_umat()
+        fig = plt.figure(figsize=(12, 6))
+        
+        if hasattr(self, 'neighbourhood_function'):
+            if self.neighbourhood_function == self.gaussian_neighbourhood:
+                ax = fig.add_subplot(121)
+                title = "Gaussian Neighbourhood"
+            elif self.neighbourhood_function == self.mexican_hat_neighbourhood:
+                ax = fig.add_subplot(122)
+                title = "Mexican Hat Neighbourhood"
+            else:
+                ax = fig.add_subplot(111)
+                title = "SOM U-Matrix (Hexagonal Grid)"
+        else:
+            ax = fig.add_subplot(111)
+            title = "SOM U-Matrix (Hexagonal Grid)"
+
+        dominant_labels = self.class_distribution_in_neurons(data, true_labels, return_dominant=True)
+
+        if self.topology == 'hexagonal':
+            patches, values = [], []
+            radius = 0.5
+            dx = 1.5 * radius
+            dy = np.sqrt(3) * radius
+
+            for i in range(self.M):
+                for j in range(self.N):
+                    x = j * dx + (0.5 * dx if i % 2 == 1 else 0) 
+                    y = i * dy
+                    hexagon = RegularPolygon((x, y), numVertices=6, radius=radius,
+                                            orientation=np.radians(0), edgecolor='k')
+                    patches.append(hexagon)
+                    values.append(umat[i, j])
+
+                    dominant_class = dominant_labels.get((i, j), None)
+                    if dominant_class is not None:
+                        ax.text(x, y, str(dominant_class), color='black',
+                                ha='center', va='center', fontsize=10)
+
+            pc = PatchCollection(patches, cmap='viridis', alpha=0.8)
+            pc.set_array(np.array(values))
+            ax.add_collection(pc)
+
+            max_x = (self.N - 1) * dx
+            if self.M > 1:
+                max_x += 0.5 * dx 
+            ax.set_aspect('equal')
+            ax.set_xlim(-radius, max_x + radius)
+            ax.set_ylim(-radius, (self.M - 0.5) * dy + radius)
+            ax.set_xticks(np.arange(0, self.N * dx, dx))
+            ax.set_xticklabels(np.arange(self.N))
+            ax.set_yticks(np.arange(0, self.M * dy, dy))
+            ax.set_yticklabels(np.arange(self.M))
+            ax.set_title(title)
+            ax.set_xlabel("Neuron Column Index")
+            ax.set_ylabel("Neuron Row Index")
+
+        else:
+            im = ax.imshow(umat, cmap='viridis', interpolation='nearest')
+            for i in range(self.M):
+                for j in range(self.N):
+                    dominant_class = dominant_labels.get((i, j), None)
+                    if dominant_class is not None:
+                        ax.text(j, i, str(dominant_class), color='black',
+                                ha='center', va='center', fontsize=10)
+            ax.set_title("SOM U-Matrix (Rectangular Topology)")
+
+        cbar = fig.colorbar(pc if self.topology == 'hexagonal' else im, ax=ax)
+        cbar.set_label("Mean distance between neurons", rotation=270, labelpad=15)
+        plt.tight_layout()
+        plt.show()
+
+    def visualize_neurons_2d(self):
+        if self.input_dim != 2:
+            raise ValueError("2D visualization requires input_dim=2")
+        
+        plt.figure(figsize=(6, 6))
+        if self.topology == 'rectangular':
+            for i in range(self.M):
+                for j in range(self.N):
+                    plt.scatter(self.weights[i][j][0], self.weights[i][j][1], 
+                             c='blue', edgecolors='gray', marker='o', s=100, 
+                             label='Neurons' if (i == 0 and j == 0) else "")
+                    if j + 1 < self.N:
+                        plt.plot([self.weights[i][j][0], self.weights[i][j+1][0]],
+                                 [self.weights[i][j][1], self.weights[i][j+1][1]], 
+                                 'gray', linestyle='-', linewidth=1, alpha=0.5)
+                    if i + 1 < self.M:
+                        plt.plot([self.weights[i][j][0], self.weights[i+1][j][0]],
+                                 [self.weights[i][j][1], self.weights[i+1][j][1]], 
+                                 'gray', linestyle='-', linewidth=1, alpha=0.5)
+        
+        elif self.topology == 'hexagonal':
+            offset = 0.5 
+            for i in range(self.M):
+                for j in range(self.N):
+                    x = j - (i % 2) * offset
+                    y = i * 0.866  # sqrt(3)/2
+                    
+                    plt.scatter(self.weights[i][j][0], self.weights[i][j][1], 
+                             c='blue', edgecolors='gray', marker='o', s=100, 
+                             label='Neurons' if (i == 0 and j == 0) else "")
+                    if j + 1 < self.N:
+                        plt.plot([self.weights[i][j][0], self.weights[i][j+1][0]],
+                                 [self.weights[i][j][1], self.weights[i][j+1][1]], 
+                                 'gray', linestyle='-', linewidth=1, alpha=0.5)
+                    if i + 1 < self.M and (j + (i % 2)) < self.N:
+                        plt.plot([self.weights[i][j][0], self.weights[i+1][j + (i % 2)][0]],
+                                 [self.weights[i][j][1], self.weights[i+1][j + (i % 2)][1]], 
+                                 'gray', linestyle='-', linewidth=1, alpha=0.5)
+                    
+                    if i + 1 < self.M and (j - ((i + 1) % 2)) >= 0:
+                        plt.plot([self.weights[i][j][0], self.weights[i+1][j - ((i + 1) % 2)][0]],
+                                 [self.weights[i][j][1], self.weights[i+1][j - ((i + 1) % 2)][1]], 
+                                 'gray', linestyle='-', linewidth=1, alpha=0.5)
+
+        plt.title(f'SOM Neurons (2D) - {self.topology.capitalize()} Topology')
+        plt.xlabel('X')
+        plt.ylabel('Y')
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
 
     def visualize_clusters(self, data, true_labels=None):
         if self.input_dim != 2:
@@ -308,7 +487,6 @@ class KohonenNetwork:
                             margin=dict(l=0,r=0,b=0,t=30))
         fig.show()
 
-    
 
     def visualize_heatmap(self, data, true_labels=None, cmap='magma', grid=True):
         cluster_counts = np.zeros((self.M, self.N))
@@ -354,3 +532,61 @@ class KohonenNetwork:
         
         plt.tight_layout()
         plt.show()
+
+    def visualize_tsne(self, data, true_labels=None, perplexity=30, n_iter=1000, random_state=42):
+        tsne = TSNE(n_components=2, perplexity=perplexity, n_iter=n_iter, random_state=random_state)
+        data_2d = tsne.fit_transform(data)
+
+        plt.figure(figsize=(6, 4))
+        if true_labels is not None:
+            scatter = plt.scatter(data_2d[:, 0], data_2d[:, 1], c=true_labels, cmap='tab10', alpha=0.7)
+            plt.legend(*scatter.legend_elements(), title="Classes")
+        else:
+            plt.scatter(data_2d[:, 0], data_2d[:, 1], alpha=0.7)
+        
+        plt.title('t-SNE Visualization of Data')
+        plt.xlabel('Component 1')
+        plt.ylabel('Component 2')
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+    def visualize_tsne_neurons(self):
+        weights_flat = self.weights.reshape(-1, self.input_dim)
+        tsne = TSNE(n_components=2, perplexity=2, n_iter=1000)
+        reduced_weights = tsne.fit_transform(weights_flat)
+
+        plt.figure(figsize=(6, 4))
+        plt.scatter(reduced_weights[:, 0], reduced_weights[:, 1], c='black', marker='x')
+        plt.title("t-SNE Visualization of SOM Neurons")
+        plt.xlabel("Component 1")
+        plt.ylabel("Component 2")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+    def plot_confusion_matrix(self, data, true_labels, dominant_labels=None, figsize=(10, 8), cmap='Blues'):
+        if dominant_labels is None:
+            dominant_labels = self.class_distribution_in_neurons(data, true_labels, return_dominant=True)
+        
+        pred_labels = []
+        for x in data:
+            neuron = self.find_bmu(x)
+            pred_labels.append(dominant_labels[neuron])
+        
+        cm = confusion_matrix(true_labels, pred_labels)
+        
+        plt.figure(figsize=figsize)
+        sns.heatmap(cm, annot=True, fmt='d', cmap=cmap)
+        plt.title('Confusion Matrix: True Classes vs Neuron-Dominant Classes')
+        plt.xlabel('Predicted (Neuron Dominant Class)')
+        plt.ylabel('True Class')
+        plt.tight_layout()
+        plt.show()
+    
+    
+
+    
+
+
+    

@@ -63,6 +63,7 @@ def try_different_number_of_iteration(data, M, N, input_dim, neighbourhood_funct
                               number_of_iterations_values, lambda_, sigma_t, s):
     results = []
     for it in number_of_iterations_values:
+        print(f'Fit with number of iterations: {it}')
         som=KohonenNetwork(M=M, N=N, input_dim=input_dim, neighbourhood_function=neighbourhood_function)
         som.fit(data, number_of_iterations=it, lambda_=lambda_, 
                 sigma_t=sigma_t, s=s, plot_eval_metrics=False)
